@@ -1,9 +1,10 @@
 # lje-imgui
 
 An [LJE](https://github.com/lj-expand/lj-expand) binary module that
-provides [Dear ImGui](https://github.com/ocornut/imgui)
-and [imnodes](https://github.com/Nelarius/imnodes) bindings for Lua. Hooks DirectX 9 to render an ImGui overlay with a
-full widget API accessible from LJE scripts.
+provides [Dear ImGui](https://github.com/ocornut/imgui),
+[imnodes](https://github.com/Nelarius/imnodes) and
+[Monaco Editor](https://github.com/microsoft/monaco-editor) bindings for Lua. Hooks DirectX 9 to render an ImGui overlay
+with a full widget API accessible from LJE scripts.
 
 ## Features
 
@@ -15,12 +16,14 @@ full widget API accessible from LJE scripts.
 - Input blocking: mouse/keyboard events are consumed by ImGui when the overlay is active
 - Full ImGui widget API exposed to Lua
 - imnodes node editor API exposed to Lua
+- The real Monaco Editor (the one from VS Code) as an ImGui widget, running unmodified inside an embedded Chromium
 
 ## Installation
 
-1. Download the latest `lje-imgui.dll` from the [releases](https://github.com/lj-expand/lje-imgui/releases) page.
-2. Place the DLL in the `.lje_modules` folder inside your user directory (`%USERPROFILE%\.lje_modules`) - create if not
-   exists.
+1. Download the latest release archive from the [releases](https://github.com/lj-expand/lje-imgui/releases) page.
+2. Extract `lje-imgui.dll` **and the `lje-imgui/` folder next to it** into the `.lje_modules` folder inside your user
+   directory (`%USERPROFILE%\.lje_modules`) - create if not exists. The folder carries the Chromium runtime and the
+   Monaco Editor assets; without it everything except `monaco` still works.
 3. Launch LJE. It will automatically load the module.
 
 ## Building
@@ -34,13 +37,35 @@ cmake --preset x64-windows-rel
 cmake --build --preset x64-windows-rel
 ```
 
-The output DLL is located at `build/x64-windows-rel/lje-imgui.dll`.
+The first configure downloads CEF (~170 MB) and `monaco-editor` into `libs/`, so it takes a while. Both are hash
+verified and cached; later configures skip the download.
+
+The build produces:
+
+- `build/x64-windows-rel/lje-imgui.dll` - the module
+- `build/x64-windows-rel/lje-imgui/` - its runtime payload (Chromium, the CEF sub-process executable, Monaco)
+
+Both must be shipped together.
 
 A Debug build is also available via the `x64-windows-dbg` preset.
 
+### Testing the editor
+
+The module only runs inside a host process, so the Monaco pipeline has a headless smoke test that covers everything
+below the game - loading Chromium, serving the editor, off-screen rendering, the JavaScript bridge, ImGui input
+forwarding and the D3D9 upload:
+
+```bash
+cmake --preset x64-windows-rel -DLJE_IMGUI_BUILD_TESTS=ON
+cmake --build --preset x64-windows-rel
+cd build/x64-windows-rel && ./monaco-smoketest.exe
+```
+
+It writes the rendered editor to `monaco_smoketest.ppm` so the output can be inspected.
+
 ## Lua API
 
-The module registers two tables in the LJE environment: `imgui` and `imnodes`.
+The module registers three tables in the LJE environment: `imgui`, `imnodes` and `monaco`.
 
 ### Frame control
 
@@ -321,7 +346,119 @@ Window flags, child flags, and input text flags are available as constants on th
 Pin shape, minimap location, attribute flag, color, and style var constants are available on the `imnodes` table (e.g.
 `imnodes.PinShape_CircleFilled`, `imnodes.Col_NodeBackground`).
 
+### monaco
+
+The real [Monaco Editor](https://github.com/microsoft/monaco-editor) - the editor from VS Code - running unmodified in
+an off-screen [CEF](https://bitbucket.org/chromiumembedded/cef) browser and composited into the overlay as an ImGui
+image. Nothing about it is reimplemented: syntax highlighting, IntelliSense, multi-cursor, find and replace and the
+command palette all behave the way they do in VS Code.
+
+#### Lifecycle
+
+| Function       | Signature   | Returns              |
+|----------------|-------------|----------------------|
+| `create`       | `([opts])`  | `id` or `nil`        |
+| `destroy`      | `(id)`      | `destroyed`          |
+| `destroy_all`  | `()`        | -                    |
+| `exists`       | `(id)`      | `exists`             |
+| `is_ready`     | `(id)`      | `ready`              |
+| `count`        | `()`        | `count`              |
+| `init`         | `()`        | `ok`                 |
+| `is_available` | `()`        | `available`          |
+| `last_error`   | `()`        | `message`            |
+
+`create` accepts an options table; every field is optional:
+
+```lua
+local id = monaco.create({
+  text         = "print('hello')",
+  language     = "lua",      -- any language monaco knows: javascript, json, cpp, ...
+  theme        = "vs-dark",  -- vs, vs-dark, hc-black, hc-light
+  font_size    = 14,
+  width        = 800,        -- initial size; the widget resizes to whatever draw() is given
+  height       = 600,
+  minimap      = true,
+  word_wrap    = false,
+  read_only    = false,
+  line_numbers = true,
+})
+```
+
+Chromium starts on the first `create` (or on an explicit `init`), which blocks for a moment. Call `init` once at
+script load if you would rather not pay for it mid-frame. If it fails - most likely because the `lje-imgui/` payload
+folder is missing - `create` returns `nil` and `last_error` explains why.
+
+Editors are independent: each one is its own browser with its own document, and any number can be alive at once.
+
+#### Drawing
+
+| Function | Signature      |
+|----------|----------------|
+| `draw`   | `(id, w, h)`   |
+
+`draw` places the editor at the current ImGui cursor position, between `imgui.new_frame()` and `imgui.render()`. It
+resizes the underlying browser to match, forwards mouse and keyboard input, and takes focus when clicked. While an
+editor has focus, keystrokes are kept away from the game.
+
+#### Content
+
+| Function          | Signature     | Returns   |
+|-------------------|---------------|-----------|
+| `get_text`        | `(id)`        | `text`    |
+| `set_text`        | `(id, text)`  | -         |
+| `consume_changed` | `(id)`        | `changed` |
+
+`get_text` reads a mirror of the editor's model that is kept in sync in the background, so it is cheap to call every
+frame. `consume_changed` returns true once per user edit, which makes the usual "save when dirty" loop a one-liner.
+Writes made through `set_text` are not reported as user edits.
+
+#### Options
+
+| Function        | Signature           |
+|-----------------|---------------------|
+| `set_language`  | `(id, language)`    |
+| `set_theme`     | `(id, theme)`       |
+| `set_read_only` | `(id, read_only)`   |
+| `set_minimap`   | `(id, enabled)`     |
+| `set_word_wrap` | `(id, enabled)`     |
+| `set_font_size` | `(id, size)`        |
+
+#### Focus & escape hatches
+
+| Function     | Signature       | Returns   |
+|--------------|-----------------|-----------|
+| `set_focus`  | `(id, focused)` | -         |
+| `is_focused` | `(id)`          | `focused` |
+| `execute_js` | `(id, code)`    | -         |
+| `reload`     | `(id)`          | -         |
+
+`execute_js` runs JavaScript in the editor's page, where `window.ljeMonaco` exposes the bridge and the global `monaco`
+object is the full editor API - useful for anything not covered above:
+
+```lua
+monaco.execute_js(id, "window.ljeMonaco.revealLine(120)")
+monaco.execute_js(id, "monaco.editor.getEditors()[0].getAction('editor.action.formatDocument').run()")
+```
+
+#### Example
+
+```lua
+local editor = monaco.create({ text = "-- hello\n", language = "lua" })
+
+lje.on("render", function()
+  imgui.new_frame()
+  if imgui.begin_window("Script") then
+    if imgui.button("Run") then
+      loadstring(monaco.get_text(editor))()
+    end
+    monaco.draw(editor, 900, 600)
+  end
+  imgui.end_window()
+  imgui.render()
+end)
+```
+
 ## License
 
 See individual library
-licenses: [Dear ImGui](https://github.com/ocornut/imgui/blob/master/LICENSE.txt), [imnodes](https://github.com/Nelarius/imnodes/blob/master/LICENSE.md), [MinHook](https://github.com/TsudaKageyu/minhook/blob/master/LICENSE.txt).
+licenses: [Dear ImGui](https://github.com/ocornut/imgui/blob/master/LICENSE.txt), [imnodes](https://github.com/Nelarius/imnodes/blob/master/LICENSE.md), [MinHook](https://github.com/TsudaKageyu/minhook/blob/master/LICENSE.txt), [CEF](https://bitbucket.org/chromiumembedded/cef/src/master/LICENSE.txt), [Monaco Editor](https://github.com/microsoft/monaco-editor/blob/main/LICENSE.txt).

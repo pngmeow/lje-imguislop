@@ -27,6 +27,8 @@ public:
   void on_reset_after(IDirect3DDevice9 *dev);
 
   bool is_visible() const { return visible_; }
+  // Whether an ImGui context exists, i.e. whether ImGui::GetIO() is safe.
+  bool imgui_ready() const { return imgui_initialized_; }
   void set_visible(bool v) { visible_ = v; }
   void toggle_visible() { visible_ = !visible_; }
   void set_toggle_bind(WPARAM vk) { toggle_bind_ = vk; }

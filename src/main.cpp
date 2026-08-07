@@ -5,6 +5,8 @@
 #include "overlay.hpp"
 #include "api/imgui_api.hpp"
 #include "api/imnodes_api.hpp"
+#include "api/monaco_api.hpp"
+#include "monaco/monaco.hpp"
 #include "version.h"
 
 LjeApi *g_api = nullptr;
@@ -24,12 +26,16 @@ LJE_MODULE_PREINIT() {
 
   imgui_api::register_all(L);
   imnodes_api::register_all(L);
+  monaco_api::register_all(L);
 
   return LJE_RESULT_OK;
 }
 
 LJE_MODULE_SHUTDOWN() {
   logger::info("Shutting down lje-imgui...");
+  // Chromium first: it owns background processes and D3D textures that must go
+  // away while the overlay's device is still around.
+  monaco::shutdown();
   Overlay::destroy();
   return LJE_RESULT_OK;
 }

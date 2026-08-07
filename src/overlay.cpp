@@ -1,6 +1,7 @@
 #include "overlay.hpp"
 #include "log.hpp"
 #include "api/imnodes_api.hpp"
+#include "monaco/monaco.hpp"
 #include <imgui.h>
 #include <imgui_impl_dx9.h>
 #include <imgui_impl_win32.h>
@@ -176,6 +177,9 @@ void Overlay::shutdown() {
   }
 
   if (prev_state == State::Ready) {
+    logger::info("Overlay::shutdown() - releasing monaco textures");
+    monaco::release_textures();
+
     logger::info("Overlay::shutdown() - shutdown_imgui");
     shutdown_imgui();
 
@@ -198,6 +202,9 @@ void Overlay::new_frame() {
 
   if (frame_started_)
     return; // Already in a frame
+
+  // Nav state is computed inside NewFrame, so this has to happen before it.
+  monaco::update_imgui_nav();
 
   ImGui_ImplDX9_NewFrame();
   ImGui_ImplWin32_NewFrame();
@@ -227,6 +234,11 @@ void Overlay::render_draw_data() {
   if (!draw_data)
     return;
 
+  // Off-screen browser frames arrive on the CEF UI thread but may only reach
+  // the device from here, and they have to land before the draw data that
+  // references their textures is submitted.
+  monaco::upload_textures(device_);
+
   // Save sRGB state
   DWORD srgb_write, srgb_texture;
   device_->GetRenderState(D3DRS_SRGBWRITEENABLE, &srgb_write);
@@ -246,6 +258,9 @@ void Overlay::render_draw_data() {
 void Overlay::on_reset() {
   logger::info("Overlay::on_reset()");
   frame_started_ = false;
+  // Editor frames live in the default pool, which Reset invalidates. Dropping
+  // them here re-arms a full upload on the next EndScene.
+  monaco::release_textures();
   if (imgui_initialized_) {
     ImGui_ImplDX9_InvalidateDeviceObjects();
   }
@@ -273,7 +288,7 @@ bool Overlay::init_imgui(IDirect3DDevice9 *dev) {
   imnodes_api::init();
 
   auto &io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
 
   ImGui::StyleColorsDark();
 
@@ -329,9 +344,15 @@ LRESULT CALLBACK Overlay::wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     return DefWindowProc(hwnd, msg, wparam, lparam);
   }
 
-  // Toggle visibility
+  // Toggle visibility. While the overlay is up and something inside it owns the
+  // keyboard - a focused Monaco editor, say - the key belongs to that text
+  // field, otherwise typing the bind hides the overlay out from under you.
+  // Clicking outside the editor blurs it and hands the bind back.
   if (msg == WM_KEYDOWN && wparam == overlay->toggle_bind_) {
-    overlay->toggle_visible();
+    const bool typing = overlay->is_visible() && overlay->imgui_ready() &&
+                        ImGui::GetIO().WantCaptureKeyboard;
+    if (!typing)
+      overlay->toggle_visible();
   }
 
   // When visible, let ImGui handle input first

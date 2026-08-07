@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; font-src 'self' data:; img-src 'self' data: blob:;">
+  <title>lje-imgui monaco host</title>
+  <!-- editor.main.css is injected by the bundle itself; linking it here too
+       would just fetch 350 KB of identical rules a second time. -->
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #1e1e1e;
+      color: #cccccc;
+      font-family: "Segoe UI", sans-serif;
+    }
+
+    #container {
+      position: absolute;
+      inset: 0;
+    }
+
+    #status {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: #888888;
+    }
+  </style>
+</head>
+<body>
+<div id="container"></div>
+<div id="status">Loading Monaco Editor&hellip;</div>
+
+<script src="vs/loader.js"></script>
+<script>
+  // Host page for the official Monaco Editor bundle. Nothing about the editor
+  // itself is reimplemented here: this is the glue that lets the native side
+  // drive it and observe its model.
+  //
+  // The native side talks to us through the CEF message router
+  // (window.ljeMonacoQuery, injected per V8 context) using a deliberately dumb
+  // "<verb>:<payload>" wire format, because the payload is often the entire
+  // document and JSON-encoding it on every keystroke is wasteful.
+  (function () {
+    'use strict';
+
+    var CHANGE_DEBOUNCE_MS = 120;
+
+    var editor = null;
+    var changeTimer = null;
+    var applyingHostWrite = 0;
+    var pendingUserEdit = false;
+
+    function send(message) {
+      if (typeof window.ljeMonacoQuery !== 'function') {
+        return;
+      }
+      window.ljeMonacoQuery({
+        request: message,
+        persistent: false,
+        onSuccess: function () {},
+        onFailure: function () {}
+      });
+    }
+
+    function log(message) {
+      send('log:' + message);
+    }
+
+    function pushText(isUserEdit) {
+      if (!editor) {
+        return;
+      }
+      var model = editor.getModel();
+      if (!model) {
+        return;
+      }
+      var verb = isUserEdit ? 'text' : 'text-host';
+      send(verb + ':' + model.getVersionId() + '|' + model.getValue());
+    }
+
+    function scheduleChangePush() {
+      // Coalesce bursts: a fast typist produces a change event per keystroke and
+      // every push carries the whole document across the process boundary. A
+      // batch counts as a user edit if any change in it came from the user,
+      // otherwise a host write landing just before one would swallow it.
+      if (changeTimer !== null) {
+        clearTimeout(changeTimer);
+      }
+      changeTimer = setTimeout(function () {
+        changeTimer = null;
+        var isUserEdit = pendingUserEdit;
+        pendingUserEdit = false;
+        pushText(isUserEdit);
+      }, CHANGE_DEBOUNCE_MS);
+    }
+
+    function create(options) {
+      var container = document.getElementById('container');
+      var status = document.getElementById('status');
+      if (status) {
+        status.remove();
+      }
+
+      editor = monaco.editor.create(container, {
+        value: options.value || '',
+        language: options.language || 'lua',
+        theme: options.theme || 'vs-dark',
+        fontSize: options.fontSize || 14,
+        readOnly: !!options.readOnly,
+        wordWrap: options.wordWrap ? 'on' : 'off',
+        lineNumbers: options.lineNumbers === false ? 'off' : 'on',
+        minimap: { enabled: options.minimap !== false },
+        automaticLayout: true,
+        scrollBeyondLastLine: false,
+        smoothScrolling: false,
+        // The editor is composited into a game's back buffer at whatever the
+        // widget size is; a blinking caret would otherwise repaint the whole
+        // frame twice a second for no reason at all.
+        cursorBlinking: 'solid',
+        renderWhitespace: 'selection',
+        tabSize: 2,
+        fixedOverflowWidgets: true
+      });
+
+      editor.onDidChangeModelContent(function () {
+        if (applyingHostWrite === 0) {
+          pendingUserEdit = true;
+        }
+        scheduleChangePush();
+      });
+
+      // Hand the native side the starting state so its mirror has a version to
+      // compare later updates against.
+      pushText(false);
+    }
+
+    window.ljeMonaco = {
+      configure: function (options) {
+        try {
+          if (editor) {
+            editor.dispose();
+            editor = null;
+          }
+          create(options || {});
+        } catch (error) {
+          log('configure failed: ' + error);
+        }
+      },
+
+      setText: function (text) {
+        if (!editor) {
+          return;
+        }
+        var model = editor.getModel();
+        if (!model || model.getValue() === text) {
+          return;
+        }
+        applyingHostWrite++;
+        try {
+          // pushEditOperations rather than setValue so undo history and the
+          // caret survive a host write.
+          model.pushEditOperations(
+            [],
+            [{ range: model.getFullModelRange(), text: text }],
+            function () { return null; }
+          );
+        } finally {
+          applyingHostWrite--;
+        }
+      },
+
+      setLanguage: function (language) {
+        if (!editor) {
+          return;
+        }
+        var model = editor.getModel();
+        if (model) {
+          monaco.editor.setModelLanguage(model, language);
+        }
+      },
+
+      setTheme: function (theme) {
+        monaco.editor.setTheme(theme);
+      },
+
+      setOption: function (name, value) {
+        if (!editor) {
+          return;
+        }
+        var options = {};
+        options[name] = value;
+        editor.updateOptions(options);
+      },
+
+      getText: function () {
+        var model = editor && editor.getModel();
+        return model ? model.getValue() : '';
+      },
+
+      revealLine: function (line) {
+        if (editor) {
+          editor.revealLineInCenter(line);
+          editor.setPosition({ lineNumber: line, column: 1 });
+        }
+      }
+    };
+
+    require.config({ paths: { vs: 'vs' } });
+    require(['vs/editor/editor.main'], function () {
+      // Tell the native side we are alive; it answers with configure(), which
+      // is what actually instantiates the editor. Creating it here instead
+      // would flash an editor with the wrong options and content first.
+      send('ready:');
+    }, function (error) {
+      var status = document.getElementById('status');
+      if (status) {
+        status.textContent = 'Failed to load Monaco Editor: ' + error;
+      }
+      log('loader error: ' + error);
+    });
+  })();
+</script>
+</body>
+</html>

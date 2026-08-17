@@ -158,6 +158,41 @@ application lifetime, so multiple scripts may modify styles and affect each othe
 | `color_edit4`   | `(label, r, g, b, a)` | `changed, r, g, b, a` |
 | `color_picker4` | `(label, r, g, b, a)` | `changed, r, g, b, a` |
 
+#### Animated color picker
+
+`color_picker4_ex` is `src/widgets`' own control: a swatch, four R/G/B/A slots and
+the label on one row, with a popup behind the swatch carrying a **Color** tab and an
+**Animation** tab. Channels are 0..1 like the rest of the color API, even though the
+slots display 0..255.
+
+| Function            | Signature                                    | Returns                            |
+|---------------------|----------------------------------------------|------------------------------------|
+| `color_picker4_ex`  | `(label, r, g, b, a, [mode], [speed])`       | `changed, r, g, b, a, mode, speed` |
+| `color_anim`        | `(r, g, b, a, mode, [speed], [time])`        | `r, g, b, a`                       |
+| `color_anim_clock`  | `()`                                         | `seconds`                          |
+
+`mode` is `"none"`, `"pulse"` (the color down to black and back) or `"rainbow"` (hue
+sweeps, keeping the picked brightness); `speed` is in cycles per second. Both are
+also on the table as `imgui.ColorAnim_None` / `_Pulse` / `_Rainbow`.
+
+The picker returns the color that was **picked**, not the animated one - passing
+`mode` and `speed` back in is what makes the popup remember across a restart. Getting
+the animated color is a separate call, so the picker can live in one Lua state and
+the drawing in another:
+
+```lua
+-- menu state: edit and store
+local changed, r, g, b, a, mode, speed = imgui.color_picker4_ex("Box", r, g, b, a, mode, speed)
+
+-- draw loop, any state: the color for right now
+local ar, ag, ab, aa = imgui.color_anim(r, g, b, a, mode, speed)
+surface.SetDrawColor(ar * 255, ag * 255, ab * 255, aa * 255)
+```
+
+`color_anim` needs no window and no frame in progress. Omitting `mode` and `speed` on
+the picker still works - the settings are then held per widget id for the lifetime of
+the process, but nothing persists them for you.
+
 #### Tabs
 
 | Function         | Signature | Returns    |

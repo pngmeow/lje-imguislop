@@ -2,6 +2,7 @@
 #include "log.hpp"
 #include "api/imnodes_api.hpp"
 #include "monaco/monaco.hpp"
+#include <im_anim.h>
 #include <imgui.h>
 #include <imgui_impl_dx9.h>
 #include <imgui_impl_win32.h>
@@ -209,6 +210,12 @@ void Overlay::new_frame() {
   ImGui_ImplDX9_NewFrame();
   ImGui_ImplWin32_NewFrame();
   ImGui::NewFrame();
+
+  // ImAnim requires both calls every frame, after NewFrame() and before any
+  // tween/clip call, or animations never advance. Scripts get them for free.
+  iam_update_begin_frame();
+  iam_clip_update(ImGui::GetIO().DeltaTime);
+
   frame_started_ = true;
 }
 
@@ -291,6 +298,11 @@ bool Overlay::init_imgui(IDirect3DDevice9 *dev) {
   io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
 
   ImGui::StyleColorsDark();
+
+  auto &style = ImGui::GetStyle();
+  style.WindowBorderSize = 1.0f;
+  style.ChildBorderSize = 1.0f;
+  style.PopupBorderSize = 1.0f;
 
   if (!ImGui_ImplWin32_Init(hwnd_)) {
     logger::error("Failed to init ImGui Win32");

@@ -262,6 +262,49 @@ static int get_window_size(lua_State *L) {
   return 2;
 }
 
+// Size of the whole render target, i.e. the host window's client area.
+static int get_display_size(lua_State *L) {
+  auto lua = g_api->lua;
+  ImVec2 v = ImGui::GetIO().DisplaySize;
+  lua->pushnumber(L, v.x);
+  lua->pushnumber(L, v.y);
+  return 2;
+}
+
+// Full resolution of the monitor the host window sits on, taskbar included.
+static int get_monitor_size(lua_State *L) {
+  auto lua = g_api->lua;
+  HWND hwnd = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
+  HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO mi = {};
+  mi.cbSize = sizeof(mi);
+  if (mon && GetMonitorInfo(mon, &mi)) {
+    lua->pushnumber(L, static_cast<double>(mi.rcMonitor.right - mi.rcMonitor.left));
+    lua->pushnumber(L, static_cast<double>(mi.rcMonitor.bottom - mi.rcMonitor.top));
+  } else {
+    lua->pushnumber(L, GetSystemMetrics(SM_CXSCREEN));
+    lua->pushnumber(L, GetSystemMetrics(SM_CYSCREEN));
+  }
+  return 2;
+}
+
+// Same monitor, minus the taskbar and other appbars.
+static int get_monitor_work_size(lua_State *L) {
+  auto lua = g_api->lua;
+  HWND hwnd = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
+  HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO mi = {};
+  mi.cbSize = sizeof(mi);
+  if (mon && GetMonitorInfo(mon, &mi)) {
+    lua->pushnumber(L, static_cast<double>(mi.rcWork.right - mi.rcWork.left));
+    lua->pushnumber(L, static_cast<double>(mi.rcWork.bottom - mi.rcWork.top));
+  } else {
+    lua->pushnumber(L, GetSystemMetrics(SM_CXSCREEN));
+    lua->pushnumber(L, GetSystemMetrics(SM_CYSCREEN));
+  }
+  return 2;
+}
+
 static int get_window_pos(lua_State *L) {
   auto lua = g_api->lua;
   ImVec2 v = ImGui::GetWindowPos();
@@ -371,6 +414,45 @@ static int text_wrapped(lua_State *L) {
   const char *str = lua->tolstring(L, 1, nullptr);
   lua->pop(L, 1);
   ImGui::TextWrapped("%s", str);
+  return 0;
+}
+
+static int push_color_style(lua_State *L) {
+  auto lua = g_api->lua;
+
+  int color_index = -1;
+  if (lua->type(L, 1) == LUA_TNUMBER) {
+    color_index = static_cast<int>(lua->tonumber(L, 1));
+  } else {
+    const char *name = lua->tolstring(L, 1, nullptr);
+    color_index = get_color_index(name);
+  }
+
+  ImVec4 color(1.0f, 1.0f, 1.0f, 1.0f);
+  if (lua->type(L, 2) == LUA_TTABLE) {
+    read_color_from_table(L, 2, color);
+  }
+
+  lua->pop(L, 2);
+
+  if (color_index >= 0) {
+    ImGui::PushStyleColor(color_index, color);
+  }
+
+  return 0;
+}
+
+static int pop_color_style(lua_State *L) {
+  auto lua = g_api->lua;
+  int count = 1;
+
+  int nargs = lua->gettop(L);
+  if (nargs >= 1) {
+    count = static_cast<int>(lua->tonumber(L, 1));
+  }
+  lua->pop(L, nargs);
+
+  ImGui::PopStyleColor(count);
   return 0;
 }
 
@@ -1265,6 +1347,41 @@ static int set_style(lua_State *L) {
   }
   lua->pop(L, 1); // pop rounding table
 
+  // Process border subtable. 0 removes a border, 1 is the usual thickness.
+  lua->getfield(L, 1, "border");
+  if (!lua->isnil(L, -1)) {
+    lua->getfield(L, -1, "window");
+    if (!lua->isnil(L, -1))
+      style.WindowBorderSize = static_cast<float>(lua->tonumber(L, -1));
+    lua->pop(L, 1);
+
+    lua->getfield(L, -1, "child");
+    if (!lua->isnil(L, -1))
+      style.ChildBorderSize = static_cast<float>(lua->tonumber(L, -1));
+    lua->pop(L, 1);
+
+    lua->getfield(L, -1, "popup");
+    if (!lua->isnil(L, -1))
+      style.PopupBorderSize = static_cast<float>(lua->tonumber(L, -1));
+    lua->pop(L, 1);
+
+    lua->getfield(L, -1, "frame");
+    if (!lua->isnil(L, -1))
+      style.FrameBorderSize = static_cast<float>(lua->tonumber(L, -1));
+    lua->pop(L, 1);
+
+    lua->getfield(L, -1, "tab");
+    if (!lua->isnil(L, -1))
+      style.TabBorderSize = static_cast<float>(lua->tonumber(L, -1));
+    lua->pop(L, 1);
+
+    lua->getfield(L, -1, "tab_bar");
+    if (!lua->isnil(L, -1))
+      style.TabBarBorderSize = static_cast<float>(lua->tonumber(L, -1));
+    lua->pop(L, 1);
+  }
+  lua->pop(L, 1); // pop border table
+
   // Process padding subtable
   lua->getfield(L, 1, "padding");
   if (!lua->isnil(L, -1)) {
@@ -1474,6 +1591,12 @@ void register_all(lua_State *L) {
   lua->setfield(L, -2, "get_window_size");
   lua->pushcclosure(L, get_window_pos, 0);
   lua->setfield(L, -2, "get_window_pos");
+  lua->pushcclosure(L, get_display_size, 0);
+  lua->setfield(L, -2, "get_display_size");
+  lua->pushcclosure(L, get_monitor_size, 0);
+  lua->setfield(L, -2, "get_monitor_size");
+  lua->pushcclosure(L, get_monitor_work_size, 0);
+  lua->setfield(L, -2, "get_monitor_work_size");
   lua->pushcclosure(L, get_cursor_pos, 0);
   lua->setfield(L, -2, "get_cursor_pos");
   lua->pushcclosure(L, set_cursor_pos, 0);
@@ -1504,6 +1627,12 @@ void register_all(lua_State *L) {
   lua->setfield(L, -2, "text_colored");
   lua->pushcclosure(L, text_wrapped, 0);
   lua->setfield(L, -2, "text_wrapped");
+
+  // Style colors
+  lua->pushcclosure(L, push_color_style, 0);
+  lua->setfield(L, -2, "push_color_style");
+  lua->pushcclosure(L, pop_color_style, 0);
+  lua->setfield(L, -2, "pop_color_style");
 
   // Buttons
   lua->pushcclosure(L, button, 0);

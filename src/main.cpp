@@ -3,10 +3,13 @@
 #include "globals.hpp"
 #include "log.hpp"
 #include "overlay.hpp"
+#include "api/imanim_api.hpp"
 #include "api/imgui_api.hpp"
 #include "api/imnodes_api.hpp"
 #include "api/monaco_api.hpp"
+#include "api/pngmeow_api.hpp"
 #include "monaco/monaco.hpp"
+#include "widgets/widgets_api.hpp"
 #include "version.h"
 
 LjeApi *g_api = nullptr;
@@ -25,8 +28,12 @@ LJE_MODULE_PREINIT() {
   logger::info("Registering API...");
 
   imgui_api::register_all(L);
+  // Extends the imgui table created above, so it has to follow it.
+  imanim_api::register_all(L);
   imnodes_api::register_all(L);
   monaco_api::register_all(L);
+  pngmeow_api::register_all(L);
+  widgets_api::register_all(L);
 
   return LJE_RESULT_OK;
 }

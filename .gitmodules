@@ -10,3 +10,6 @@
 [submodule "lje"]
 	path = lje
 	url = https://github.com/lj-expand/lj-expand
+[submodule "libs/ImAnim"]
+	path = libs/ImAnim
+	url = https://github.com/soufianekhiat/ImAnim

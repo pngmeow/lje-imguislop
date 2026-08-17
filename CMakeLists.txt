@@ -34,6 +34,13 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_link_libraries(imgui PUBLIC d3d9)
 
+# ImAnim (animation helpers). Only im_anim.cpp is built - the demo/doc/usecase
+# translation units in that repo are samples and pull in ImPlatform.
+set(IMANIM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/ImAnim)
+add_library(imanim STATIC ${IMANIM_DIR}/im_anim.cpp)
+target_include_directories(imanim PUBLIC ${IMANIM_DIR})
+target_link_libraries(imanim PUBLIC imgui)
+
 # imnodes
 set(IMNODES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/imnodes)
 add_library(imnodes STATIC ${IMNODES_DIR}/imnodes.cpp)
@@ -98,7 +105,7 @@ target_include_directories(lje-imgui PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/lje/sdk/include"
         "${CMAKE_CURRENT_BINARY_DIR}/src"
 )
-target_link_libraries(lje-imgui PRIVATE imgui imnodes minhook lje-monaco d3d9 dxguid)
+target_link_libraries(lje-imgui PRIVATE imgui imanim imnodes minhook lje-monaco d3d9 dxguid)
 add_dependencies(lje-imgui lje-imgui-cef)
 
 cef_install_runtime(lje-imgui "${LJE_IMGUI_PAYLOAD_DIR}/cef")
